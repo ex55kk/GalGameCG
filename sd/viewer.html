@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <title>Galgame SD 动画预览器</title>
+    <style>
+        body { background-color: #2c2c2c; color: white; font-family: sans-serif; text-align: center; }
+        canvas { background-color: #3d3d3d; border: 2px solid #666; margin-top: 15px; border-radius: 8px; }
+        #controls { margin: 15px; padding: 10px; background: #444; border-radius: 8px; display: inline-block; }
+        select, button { padding: 5px 10px; font-size: 16px; margin: 0 5px; cursor: pointer; }
+        #exportStatus { margin-left: 10px; color: #9ad0ff; font-size: 14px; }
+    </style>
+</head>
+<body>
+    <h2>SD 动画实时拼接预览器</h2>
+    <div id="controls">
+        <label>选择动作: </label>
+        <button onclick="prevAnim()">上一个</button>
+        <button onclick="nextAnim()">下一个</button>
+        <select id="animSelect"></select>
+        <button onclick="togglePlay()">暂停 / 播放</button>
+        <span id="frameCounter" style="margin-left: 15px;">当前时间轴: 0</span>
+        <button id="exportBtn" onclick="exportCurrentFramePng()">导出</button>
+        <span id="exportStatus"></span>
+    </div>
+    <br>
+    <canvas id="canvas" width="1125" height="675" style="max-width: 100%;"></canvas>
+
+    <script>
+        let animData = {};
+        let animKeys = [];
+        let images = {};
+        let currentAnimName = "";
+        let isPlaying = true;
+        let currentFrameTime = 0;
+        let lastUpdate = Date.now();
+
+        // --- 核心设定 ---
+        // 游戏引擎中，角色的世界坐标基准点通常在画面正中偏下
+        const baseOffsetX = 562;
+        const baseY = 337;
+
+        const canvas = document.getElementById("canvas");
+        const ctx = canvas.getContext("2d");
+        const animSelect = document.getElementById("animSelect");
+        const exportStatusEl = document.getElementById("exportStatus");
+        const exportBtn = document.getElementById("exportBtn");
+
+        // 1. 加载我们提取的 JSON 数据
+        fetch('extracted_animations.json')
+            .then(res => res.json())
+            .then(data => {
+                animData = data;
+                animKeys = Object.keys(data);
+
+                animSelect.innerHTML = "";
+                animKeys.forEach(key => {
+                    let opt = document.createElement("option");
+                    opt.value = key;
+                    opt.text = key;
+                    animSelect.add(opt);
+                });
+
+                animSelect.onchange = (e) => loadAnim(e.target.value);
+
+                // 默认加载第一个动作
+                if (animKeys.length > 0) {
+                    loadAnim(animKeys[0]);
+                }
+                requestAnimationFrame(renderLoop);
+            })
+            .catch(err => alert("无法读取 JSON，请确保你使用了带导出接口的本地服务器运行此文件（例如 python 1.py serve）！\n\n错误：" + err));
+
+        // 2. 动作切换与图片预加载
+        function loadAnim(name) {
+            if (!animData[name]) return;
+            currentAnimName = name;
+            currentFrameTime = 0;
+            animSelect.value = name;
+
+            const anim = animData[name];
+            const folderPrefix = deriveSdFolderPrefix(name);
+
+            // 预加载该动画用到的所有图片（自动匹配 sd数字 文件夹）
+            anim.layers.forEach(layer => {
+                layer.frames.forEach(frame => {
+                    if (frame.visible !== false && frame.image && !images[frame.image]) {
+                        let img = new Image();
+                        img.src = folderPrefix + "/" + frame.image;
+                        images[frame.image] = img;
+                    }
+                });
+            });
+            
+            exportStatusEl.textContent = "";
+        }
+
+        function getCurrentAnimIndex() {
+            return animKeys.indexOf(currentAnimName);
+        }
+
+        function prevAnim() {
+            if (!animKeys.length) return;
+            let idx = getCurrentAnimIndex();
+            if (idx < 0) idx = 0;
+            idx = (idx - 1 + animKeys.length) % animKeys.length;
+            loadAnim(animKeys[idx]);
+        }
+
+        function nextAnim() {
+            if (!animKeys.length) return;
+            let idx = getCurrentAnimIndex();
+            if (idx < 0) idx = 0;
+            idx = (idx + 1) % animKeys.length;
+            loadAnim(animKeys[idx]);
+        }
+
+        function togglePlay() { isPlaying = !isPlaying; }
+
+        function deriveExportPrefix() {
+            // 例：SD002_EA01_TA01 -> sd002
+            const m = (currentAnimName || "").match(/^([A-Za-z]+\d+)/);
+            if (m) return m[1].toLowerCase();
+            return "sd000";
+        }
+
+        function deriveSdFolderPrefix(animName) {
+            // 例：SD003_EA01_TA01 -> sd003
+            const m = (animName || "").match(/^([A-Za-z]+\d+)/);
+            if (m) return m[1].toLowerCase();
+            return "sd000";
+}
+
+        async function exportCurrentFramePng() {
+            if (!currentAnimName) return;
+            if (exportBtn.disabled) return;
+
+            exportBtn.disabled = true;
+            exportStatusEl.textContent = "导出中...";
+
+            try {
+                // 这里导出的是“当前画布画面”，不做缩放、不做重采样，直接 PNG（无损）
+                const blob = await new Promise((resolve, reject) => {
+                    canvas.toBlob(b => {
+                        if (!b) reject(new Error("canvas.toBlob 失败"));
+                        else resolve(b);
+                    }, "image/png");
+                });
+
+                const prefix = encodeURIComponent(deriveExportPrefix());
+                const resp = await fetch(`/api/export_frame?prefix=${prefix}`, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "image/png"
+                    },
+                    body: blob
+                });
+
+                let data;
+                try {
+                    data = await resp.json();
+                } catch {
+                    throw new Error("服务器返回了非 JSON 响应");
+                }
+
+                if (!resp.ok || !data.ok) {
+                    throw new Error(data && data.error ? data.error : `HTTP ${resp.status}`);
+                }
+
+                exportStatusEl.textContent = `已导出：${data.filename}`;
+                console.log("导出成功", data);
+            } catch (e) {
+                console.error(e);
+                exportStatusEl.textContent = `导出失败：${e.message || e}`;
+                alert("导出失败：" + (e.message || e) + "\n请确认你是用 python 1.py serve 启动的，而不是 python -m http.server");
+            } finally {
+                exportBtn.disabled = false;
+            }
+        }
+
+        // 3. 渲染循环 (核心拼接逻辑)
+        function renderLoop() {
+            let now = Date.now();
+            let delta = now - lastUpdate;
+            lastUpdate = now;
+
+            // 清空画布
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            if (currentAnimName && animData[currentAnimName]) {
+                const anim = animData[currentAnimName];
+                const duration = anim.duration > 0 ? anim.duration : 120; // 防止除0
+
+                if (isPlaying) {
+                    // 按照 60FPS 的基准推进时间轴
+                    currentFrameTime += (delta / 1000) * 60;
+                    if (currentFrameTime >= duration) currentFrameTime %= duration; // 循环播放
+                }
+
+                document.getElementById("frameCounter").innerText = "当前时间轴: " + Math.floor(currentFrameTime);
+
+                // 遍历每一个图层并绘制
+                anim.layers.forEach(layer => {
+                    if (layer.frames.length === 0) return;
+
+                    // 寻找当前时间对应的关键帧 (Step 插值法：找到小于等于当前时间的最大帧)
+                    let activeFrame = layer.frames[0];
+                    for (let i = 0; i < layer.frames.length; i++) {
+                        if (layer.frames[i].time <= currentFrameTime) {
+                            activeFrame = layer.frames[i];
+                        } else {
+                            break;
+                        }
+                    }
+
+                    if (activeFrame.image === 'mask-mask.png') return;
+
+                    let img = images[activeFrame.image];
+                    if (img && img.complete) {
+                        ctx.save();
+
+                        // A. 移动到世界基准坐标 + 此帧的偏移坐标
+                        ctx.translate(baseOffsetX + activeFrame.x, baseY + activeFrame.y);
+
+                        // B. 旋转 (角度转弧度)
+                        ctx.rotate(activeFrame.rotation_angle * Math.PI / 180);
+
+                        // C. 缩放
+                        ctx.scale(activeFrame.scale_x, activeFrame.scale_y);
+
+                        // D. 不透明度
+                        ctx.globalAlpha = activeFrame.opacity / 255.0;
+
+                        // E. 混合模式 (基础映射)
+                        if (activeFrame.blend_mask === 19) ctx.globalCompositeOperation = "screen";
+                        if (activeFrame.blend_mask === 99) ctx.globalCompositeOperation = "multiply";
+
+                        // F. 绘制图片（按 origin 锚点对齐）
+                        ctx.drawImage(img, -activeFrame.origin_x, -activeFrame.origin_y);
+
+                        ctx.restore();
+                    }
+                });
+            }
+
+            // 请求下一帧
+            requestAnimationFrame(renderLoop);
+        }
+    </script>
+</body>
+</html>
