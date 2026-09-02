@@ -10,7 +10,7 @@
 
 - 📦 最新版本：**V4.6**
 - ⬇️ [下载最新版](https://github.com/ex55kk/GalGameCG/releases/latest)
-- 📖 [Bilibili 教程 / 原专栏](https://www.bilibili.com/opus/1150951768201363491)
+- 📖 [Bilibili 教程 / 原专栏](https://www.bilibili.com/opus/1150951768201363491)(已删除，原因你懂的()
 - 🧰 PIMG / PSB 解包推荐：[FreeMote](https://github.com/UlyssesWu/FreeMote/releases)
 
 > [!WARNING]
